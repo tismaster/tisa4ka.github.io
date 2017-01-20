@@ -1,0 +1,21 @@
+<?php
+class CM_Validation_RegExp extends CM_Validation {
+	protected $message = "Error: %element% contains invalid characters.";
+	protected $pattern;
+
+	public function __construct($pattern, $message = "") {
+		if(!empty($message))
+			$this->message = $message;
+		else
+			$this->message = CM_UI_Strings::get('FORM_ERR_INVALID_REGEX');
+
+		$this->pattern = $pattern;
+		parent::__construct($this->message);
+	}
+
+	public function isValid($value) {
+		if($this->isNotApplicable($value) || preg_match($this->pattern, $value))
+			return true;
+		return false;	
+	}
+}

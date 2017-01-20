@@ -1,0 +1,185 @@
+<?php
+
+/**
+ * Class for submissions controller
+ * 
+ * Manages the submissions related operations in the backend.
+ *
+ * @author CMSHelplive
+ */
+class CM_Submission_Controller
+{
+
+    private $mv_handler;
+
+    public function __construct()
+    {
+        $this->mv_handler = new CM_Model_View_Handler();
+    }
+
+    public function manage($model, $service, $request, $params)
+    {   $data = new stdClass();
+        
+        $filter= new CM_Submission_Filter($request,$service);
+        $form_id= $filter->get_form();
+        $data->forms = CM_Utilities::get_forms_dropdown($service);
+        $data->fields = $service->get_all_form_fields($form_id);
+      
+        $data->filter= $filter;
+        $data->cm_slug = $request->req['page'];
+        $data->submissions= $filter->get_records();
+      
+        $view = $this->mv_handler->setView('submissions_manager');
+        $view->render($data);
+        
+    }
+
+    public function view($model, CM_Services $service, $request, $params)
+    {
+        if (isset($request->req['cm_submission_id']))
+        {
+
+            if (!$model->load_from_db($request->req['cm_submission_id']))
+            {
+                $view = $this->mv_handler->setView('show_notice');
+                $data = CM_UI_Strings::get('MSG_DO_NOT_HAVE_ACCESS');
+                $view->render($data);
+            } else
+            {
+                $child_id = $model->get_child_id();
+                if($child_id != 0){
+                    $request->req['cm_submission_id'] = $model->get_last_child();
+                    return $this->view($model, $service, $request, $params);
+                }
+                    
+                
+                if (isset($request->req['cm_action']) && $request->req['cm_action'] == 'delete')
+                {
+                    $request->req['cm_form_id'] = $model->get_form_id();
+                    $request->req['cm_selected'] = $request->req['cm_submission_id'];
+                    $this->remove($model, $service, $request, $params);
+                    unset($request->req['cm_selected']);
+                } else
+                {
+                    $settings = new CM_Options;
+
+                    $data = new stdClass();
+
+                    $data->submission = $model;
+
+                    $data->payment = $service->get('PAYPAL_LOGS', array('submission_id' => $service->get_oldest_submission_from_group($model->get_submission_id())), array('%d'), 'row', 0, 99999);
+
+                    if ($data->payment != null)
+                    {
+                        $data->payment->total_amount = $settings->get_formatted_amount($data->payment->total_amount, $data->payment->currency);
+
+                        if ($data->payment->log)
+                            $data->payment->log = maybe_unserialize($data->payment->log);
+                    }
+
+                    $data->notes = $service->get('NOTES', array('submission_id' => $model->get_submission_id()), array('%d'), 'results', 0, 99999, '*', null, true);
+                    $i = 0;
+                    if (is_array($data->notes))
+                        foreach ($data->notes as $note)
+                        {
+                            $data->notes[$i]->author = get_userdata($note->published_by)->display_name;
+                            if ($note->last_edited_by)
+                                $data->notes[$i++]->editor = get_userdata($note->last_edited_by)->display_name;
+                            else
+                                $data->notes[$i++]->editor = null;
+                        }
+                    /*
+                     * Check submission type
+                     */
+                    $form = new CM_Forms();
+                    $form->load_from_db($model->get_form_id());
+                    $data->form_id = $model->get_form_id();
+                    $data->form_name = $form->get_form_name();
+                    $fields= $service->get_all_form_fields($model->get_form_id());
+                    $data->email_field_id=$fields['0']->field_id;
+                    $form_type = $form->get_form_type() == "1" ? "Registration" : "Contact";
+                    $data->form_type = $form_type;
+                    $data->form_type_status = $form->get_form_type();
+                    //$data->form_name = $form->get_form_name();
+                    $data->form_is_unique_token = $form->get_form_is_unique_token();
+                    $cm_sr=new CM_Services;
+                    $related_subs=$cm_sr->get_submissions_by_email($data->submission->get_user_email());
+                    if(is_array($related_subs))
+                        $data->related=count($related_subs);
+                    if($data->related >0)
+                    {
+                        $data->related=$data->related-1;
+                    }
+                    else
+                        $data->related=0;
+                    /*
+                     * User details if form is registration type
+                     */
+                    if ($form->get_form_type() == "1")
+                    {
+                        $email = $model->get_user_email();
+                        if ($email != "")
+                        {
+                            $user = get_user_by('email', $email);
+                            $data->user = $user;
+                        }
+                    }
+                    $view = $this->mv_handler->setView('view_submission');
+
+                    $view->render($data);
+                }
+            }
+        } else
+            throw new InvalidArgumentException(CM_UI_Strings::get('MSG_INVALID_SUBMISSION_ID'));
+    }
+
+    public function print_pdf($model, $service, $request, $params)
+    {
+        if(is_admin())
+            CM_Utilities::redirect('?page=cm_submission_manage&cm_form_id='.$request->req['cm_form_id']);
+        else{
+            ?>
+            <pre class='cm-pre-wrapper-for-script-tags'><script>
+                location.reload();
+            </script></pre>
+            <?php
+        }
+            
+    }
+
+    public function remove($model, CM_Services $service, $request, $params)
+    {
+       $form_id= isset($request->req['cm_form_id']) ? $request->req['cm_form_id'] : null; 
+         $selected = isset($request->req['cm_selected']) ? $request->req['cm_selected'] : null;
+        if($selected !=null){
+        $service->remove_submissions($selected);
+        $service->remove_submission_notes($selected);
+        $service->remove_submission_payment_logs($selected);
+        }
+        CM_Utilities::redirect('?page=cm_submission_manage&cm_form_id='.$form_id);
+    }
+    public function related($model, CM_Services $service, $request, $params)
+    {
+         $data=new stdClass();
+         $data->submission_id=$request->req['cm_submission_id'];
+          $data->user_email=$request->req['cm_user_email'];
+         $cm_sr=new CM_Services;
+         $data->submissions=$cm_sr->get_submissions_by_email($data->user_email);
+        // echo "<pre>",var_dump($submissions);die;
+         $view = $this->mv_handler->setView('related_submissions');
+         $view->render($data);
+    }
+    public function export($model, CM_Services $service, $request, $params)
+    {
+        $this->manage($model, $service, $request, $params);
+    }
+
+    public function search($model, CM_Services $service, $request, $params)
+    {
+        
+    }
+
+}
+        
+        
+        
